@@ -33,7 +33,7 @@ public class CustomerController {
     @Operation(summary = "Страничная выдача клиентов", description = "Клиенты без связей. Используйте параметры page и size.")
     @GetMapping
     public ResponseEntity<Page<CustomerResponse>> getAll(
-            @PageableDefault(size = 20) Pageable pageable) {
+            @PageableDefault(page = 0, size = 20) Pageable pageable) {
         return ResponseEntity.ok(customerService.getAll(pageable));
     }
 }
