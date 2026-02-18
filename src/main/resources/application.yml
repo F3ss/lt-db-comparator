@@ -2,6 +2,11 @@ spring:
   application:
     name: demo
 
+  # ── SQL init (schema.sql выполняется при каждом старте) ──
+  sql:
+    init:
+      mode: always
+
   # ── PostgreSQL ──
   datasource:
     url: jdbc:postgresql://localhost:5432/demo
