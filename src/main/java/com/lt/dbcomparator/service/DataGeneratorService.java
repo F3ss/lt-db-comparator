@@ -339,12 +339,11 @@ public class DataGeneratorService {
                 orderCustomerPairs[i][0] = orderIds.get(i);
             }
 
-            final int orderCount = totalOrders;
             jdbcTemplate.batchUpdate(
                     "INSERT INTO orders (id, customer_id, order_number, order_date, status, " +
                             "total_amount, currency, shipping_address, notes, expected_delivery) " +
                             "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    orderIds, orderCount,
+                    orderIds, totalOrders,
                     (PreparedStatement ps, Long ordId) -> {
                         ThreadLocalRandom r = ThreadLocalRandom.current();
                         int idx = orderIds.indexOf(ordId);
@@ -360,12 +359,11 @@ public class DataGeneratorService {
                         ps.setString(9, r.nextBoolean() ? "Express delivery" : null);
                         ps.setObject(10, LocalDate.now().plusDays(r.nextInt(30)));
                     });
-            recordCount += orderCount;
 
             // 5. Insert order items (2–7 per order)
             int totalItems = 0;
-            long[][] itemMeta = new long[orderCount * 7][2]; // [orderId, productId]
-            for (int i = 0; i < orderCount; i++) {
+            long[][] itemMeta = new long[totalOrders * 7][2]; // [orderId, productId]
+            for (int i = 0; i < totalOrders; i++) {
                 int items = 2 + rng.nextInt(6);
                 for (int j = 0; j < items; j++) {
                     itemMeta[totalItems][0] = orderIds.get(i);
@@ -379,11 +377,10 @@ public class DataGeneratorService {
                         "SELECT nextval(pg_get_serial_sequence('order_items','id')) FROM generate_series(1,?)",
                         Long.class, totalItems);
 
-                final int itemCount = totalItems;
                 jdbcTemplate.batchUpdate(
                         "INSERT INTO order_items (id, order_id, product_id, quantity, " +
                                 "unit_price, total_price, discount, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                        itemIds, itemCount,
+                        itemIds, totalItems,
                         (PreparedStatement ps, Long itemId) -> {
                             ThreadLocalRandom r = ThreadLocalRandom.current();
                             int idx = itemIds.indexOf(itemId);
@@ -400,7 +397,7 @@ public class DataGeneratorService {
                             ps.setBigDecimal(7, disc);
                             ps.setTimestamp(8, Timestamp.valueOf(now));
                         });
-                recordCount += itemCount;
+                recordCount += totalItems;
             }
         }
 
@@ -451,7 +448,6 @@ public class DataGeneratorService {
     }
 
     private void generateProducts() {
-        ThreadLocalRandom rng = ThreadLocalRandom.current();
         LocalDateTime now = LocalDateTime.now();
 
         List<Long> ids = jdbcTemplate.queryForList(
