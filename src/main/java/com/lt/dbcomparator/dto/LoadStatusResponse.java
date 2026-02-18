@@ -34,6 +34,6 @@ public class LoadStatusResponse {
     @Schema(description = "Батчей упало с ошибкой", example = "2")
     private long batchesFailed;
 
-    @Schema(description = "Время работы (сек)", example = "45")
-    private long elapsedSeconds;
+    @Schema(description = "Время работы (мин)", example = "5")
+    private long elapsedMinutes;
 }

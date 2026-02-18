@@ -44,6 +44,8 @@ public class DataGeneratorService {
     // ── Состояние ──
     private volatile boolean running = false;
     private ScheduledExecutorService scheduler;
+    private ExecutorService workerPool;
+    private Semaphore inflightPermits;
     private LoadRequest currentConfig;
     private Instant startedAt;
 
@@ -62,6 +64,16 @@ public class DataGeneratorService {
 
     // ── Пул продуктов (предзаполняется один раз) ──
     private List<Long> productIds;
+
+    // ── Оценка пропускной способности ──
+    // Каждый батч = 8 SQL round-trips (4× nextval + 4× INSERT).
+    // FIXED_OVERHEAD_MS — базовая стоимость round-trips, не зависящая от размера
+    // батча.
+    // MS_PER_CUSTOMER_GRAPH — стоимость одного Customer-графа внутри batch INSERT
+    // (1 customer + 1 profile + ~3 orders + ~13.5 items = ~17.5 строк).
+    // estimatedBatchMs = FIXED_OVERHEAD_MS + batchSize × MS_PER_CUSTOMER_GRAPH
+    private static final double FIXED_OVERHEAD_MS = 10.0;
+    private static final double MS_PER_CUSTOMER_GRAPH = 0.2;
 
     // ── Справочные данные для генерации ──
     private static final String[] FIRST_NAMES = {
@@ -119,6 +131,24 @@ public class DataGeneratorService {
 
         validate(request);
 
+        // ── Определяем кол-во воркеров ──
+        int workers = request.getWorkerThreads() > 0
+                ? request.getWorkerThreads()
+                : Math.max(2, Runtime.getRuntime().availableProcessors());
+        request.setWorkerThreads(workers); // сохраняем фактическое значение
+
+        // ── Проверка реалистичности запроса ──
+        int maxRate = estimateMaxBatchesPerSecond(request.getBatchSize(), workers);
+        if (request.getBatchesPerSecond() > maxRate) {
+            throw new IllegalArgumentException(String.format(
+                    "Запрошено %d батчей/сек, но при batchSize=%d и %d воркерах " +
+                            "максимально возможная нагрузка ≈ %d батчей/сек. " +
+                            "Уменьшите batchesPerSecond до %d, уменьшите batchSize, " +
+                            "увеличьте workerThreads или используйте несколько реплик.",
+                    request.getBatchesPerSecond(), request.getBatchSize(),
+                    workers, maxRate, maxRate));
+        }
+
         this.currentConfig = request;
         this.running = true;
         this.startedAt = Instant.now();
@@ -129,12 +159,23 @@ public class DataGeneratorService {
 
         ensureProductsExist();
 
-        long periodMs = 1000L / request.getBatchesPerSecond();
+        // ── Worker pool: выполняет generateBatch параллельно ──
+        this.workerPool = Executors.newFixedThreadPool(workers, r -> {
+            Thread t = new Thread(r, "gen-worker");
+            t.setDaemon(true);
+            return t;
+        });
+        // Семафор ограничивает кол-во одновременно выполняемых батчей (2× воркеров)
+        this.inflightPermits = new Semaphore(workers * 2);
+
+        // ── Ticker: отправляет задачи в worker pool с заданной частотой ──
+        long periodMs = Math.max(1, 1000L / request.getBatchesPerSecond());
         this.scheduler = Executors.newScheduledThreadPool(1);
         scheduler.scheduleAtFixedRate(this::executeTick, 0, periodMs, TimeUnit.MILLISECONDS);
 
-        log.info("Генератор запущен: batchSize={}, batchesPerSecond={}, duration={}min",
-                request.getBatchSize(), request.getBatchesPerSecond(), request.getDurationMinutes());
+        log.info("Генератор запущен: batchSize={}, batchesPerSecond={}, workers={}, maxRate={}, duration={}min",
+                request.getBatchSize(), request.getBatchesPerSecond(), workers, maxRate,
+                request.getDurationMinutes());
     }
 
     public synchronized void stop() {
@@ -143,6 +184,18 @@ public class DataGeneratorService {
         running = false;
         if (scheduler != null) {
             scheduler.shutdown();
+        }
+        if (workerPool != null) {
+            workerPool.shutdown();
+            try {
+                if (!workerPool.awaitTermination(30, TimeUnit.SECONDS)) {
+                    log.warn("Worker pool не завершился за 30с, принудительная остановка");
+                    workerPool.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                workerPool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
         log.info("Генератор остановлен. Всего записей: {}", totalRecords.get());
     }
@@ -155,8 +208,8 @@ public class DataGeneratorService {
                 .batchesSubmitted(submittedCount.get())
                 .batchesCompleted(completedCount.get())
                 .batchesFailed(failedCount.get())
-                .elapsedSeconds(startedAt != null
-                        ? java.time.Duration.between(startedAt, Instant.now()).getSeconds()
+                .elapsedMinutes(startedAt != null
+                        ? java.time.Duration.between(startedAt, Instant.now()).toMinutes()
                         : 0)
                 .build();
     }
@@ -178,21 +231,31 @@ public class DataGeneratorService {
             }
         }
 
+        // Backpressure: если все воркеры заняты — пропускаем тик
+        if (!inflightPermits.tryAcquire()) {
+            log.warn("Worker pool перегружен, батч пропущен");
+            return;
+        }
+
         submittedCount.incrementAndGet();
         batchesSubmittedCounter.increment();
 
-        Timer.Sample sample = Timer.start(meterRegistry);
-        try {
-            transactionTemplate.executeWithoutResult(status -> generateBatch(currentConfig.getBatchSize()));
-            completedCount.incrementAndGet();
-            batchesCompletedCounter.increment();
-        } catch (Exception e) {
-            failedCount.incrementAndGet();
-            batchesFailedCounter.increment();
-            log.error("Ошибка при записи батча: {}", e.getMessage(), e);
-        } finally {
-            sample.stop(batchDurationTimer);
-        }
+        workerPool.submit(() -> {
+            Timer.Sample sample = Timer.start(meterRegistry);
+            try {
+                transactionTemplate.executeWithoutResult(
+                        status -> generateBatch(currentConfig.getBatchSize()));
+                completedCount.incrementAndGet();
+                batchesCompletedCounter.increment();
+            } catch (Exception e) {
+                failedCount.incrementAndGet();
+                batchesFailedCounter.increment();
+                log.error("Ошибка при записи батча: {}", e.getMessage(), e);
+            } finally {
+                sample.stop(batchDurationTimer);
+                inflightPermits.release();
+            }
+        });
     }
 
     /**
@@ -349,12 +412,40 @@ public class DataGeneratorService {
     // Утилиты
     // ═══════════════════════════════════════════
 
+    /**
+     * Оценивает максимально возможное кол-во батчей/сек для данного инстанса.
+     * <p>
+     * Формула: estimatedBatchMs = FIXED_OVERHEAD_MS + batchSize ×
+     * MS_PER_CUSTOMER_GRAPH
+     * <br>
+     * maxRate = workerThreads × (1000 / estimatedBatchMs)
+     * <p>
+     * Примеры (4 воркера):
+     * <ul>
+     * <li>batchSize=50 → ~20ms/batch → max ~200 batch/sec</li>
+     * <li>batchSize=100 → ~30ms/batch → max ~133 batch/sec</li>
+     * <li>batchSize=500 → ~110ms/batch → max ~36 batch/sec</li>
+     * </ul>
+     */
+    static int estimateMaxBatchesPerSecond(int batchSize, int workerThreads) {
+        double estimatedBatchMs = FIXED_OVERHEAD_MS + batchSize * MS_PER_CUSTOMER_GRAPH;
+        return Math.max(1, (int) (workerThreads * (1000.0 / estimatedBatchMs)));
+    }
+
+    /**
+     * Инициализация справочника продуктов.
+     * pg_advisory_xact_lock гарантирует, что при одновременном старте нескольких
+     * реплик только одна выполнит INSERT; остальные подождут и увидят данные.
+     */
     private void ensureProductsExist() {
-        Long count = jdbcTemplate.queryForObject("SELECT count(*) FROM products", Long.class);
-        if (count == null || count == 0) {
-            log.info("Предзаполнение {} продуктов...", PRODUCT_POOL_SIZE);
-            generateProducts();
-        }
+        transactionTemplate.executeWithoutResult(status -> {
+            jdbcTemplate.execute("SELECT pg_advisory_xact_lock(1000042)");
+            Long count = jdbcTemplate.queryForObject("SELECT count(*) FROM products", Long.class);
+            if (count == null || count == 0) {
+                log.info("Предзаполнение {} продуктов...", PRODUCT_POOL_SIZE);
+                generateProducts();
+            }
+        }); // lock автоматически освобождается при commit
         productIds = jdbcTemplate.queryForList("SELECT id FROM products", Long.class);
         log.info("Пул продуктов: {} шт.", productIds.size());
     }
@@ -394,6 +485,8 @@ public class DataGeneratorService {
             throw new IllegalArgumentException("batchesPerSecond должен быть > 0");
         if (req.getDurationMinutes() <= 0)
             throw new IllegalArgumentException("durationMinutes должен быть > 0");
+        if (req.getWorkerThreads() < 0)
+            throw new IllegalArgumentException("workerThreads должен быть >= 0 (0 = авто)");
     }
 
     private static String pick(String[] arr, ThreadLocalRandom rng) {

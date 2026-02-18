@@ -24,4 +24,7 @@ public class LoadRequest {
 
     @Schema(description = "Продолжительность генерации в минутах", example = "30")
     private int durationMinutes;
+
+    @Schema(description = "Количество потоков-воркеров для параллельной записи (0 = авто: кол-во CPU ядер)", example = "0")
+    private int workerThreads;
 }
