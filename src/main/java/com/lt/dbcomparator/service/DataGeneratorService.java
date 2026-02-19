@@ -359,6 +359,7 @@ public class DataGeneratorService {
                         ps.setString(9, r.nextBoolean() ? "Express delivery" : null);
                         ps.setObject(10, LocalDate.now().plusDays(r.nextInt(30)));
                     });
+            recordCount += totalOrders;
 
             // 5. Insert order items (2–7 per order)
             int totalItems = 0;

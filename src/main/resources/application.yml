@@ -1,6 +1,6 @@
 spring:
   application:
-    name: demo
+    name: lt-db-comparator
 
   # ── SQL init (schema.sql выполняется при каждом старте) ──
   sql:
