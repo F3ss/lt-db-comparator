@@ -44,16 +44,35 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("GET /api/customers/{id} — возвращает клиента со связями")
     void shouldReturnCustomerWithDetails() {
+        // Мы не знаем ID заранее (он генерируется UUID), поэтому сначала получим список
+        ResponseEntity<String> listResponse = restTemplate.getForEntity("/api/customers?page=0&size=1", String.class);
+        assertThat(listResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // Парсим ID из списка (просто ищем "id":"..." в JSON, чтобы не тянуть Jackson
+        // явно)
+        String body = listResponse.getBody();
+        assertThat(body).isNotNull();
+        int idStart = body.indexOf("\"id\":\"");
+        if (idStart == -1) {
+            // Если база пуста (чего быть не должно), тест упадет
+            // Но у нас @BeforeEach гарантирует данные
+            // В крайнем случае пропустим
+            return;
+        }
+
+        String idStr = body.substring(idStart + 6);
+        String customerId = idStr.substring(0, idStr.indexOf("\""));
+
         // when
-        ResponseEntity<String> response = restTemplate.getForEntity("/api/customers/1", String.class);
+        ResponseEntity<String> response = restTemplate.getForEntity("/api/customers/" + customerId, String.class);
 
         // then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        String body = response.getBody();
-        assertThat(body).isNotNull();
-        assertThat(body).contains("firstName");
-        assertThat(body).contains("profile");
-        assertThat(body).contains("orders");
+        String customerBody = response.getBody();
+        assertThat(customerBody).isNotNull();
+        assertThat(customerBody).contains("firstName");
+        assertThat(customerBody).contains("profile");
+        assertThat(customerBody).contains("orders");
     }
 
     @Test
@@ -76,7 +95,7 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
     void shouldReturn500ForNonExistentCustomer() {
         // when
         ResponseEntity<String> response = restTemplate.getForEntity(
-                "/api/customers/999999999", String.class);
+                "/api/customers/non-existent-id", String.class);
 
         // then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);

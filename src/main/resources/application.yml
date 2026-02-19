@@ -7,27 +7,11 @@ spring:
     init:
       mode: always
 
-  # ── PostgreSQL ──
-  datasource:
-    url: jdbc:postgresql://localhost:5432/demo
-    username: postgres
-    password: postgres
-    hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
-
-  # ── JPA / Hibernate ──
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: false
-    open-in-view: false
-    properties:
-      hibernate:
-        jdbc:
-          batch_size: 50
-        order_inserts: true
-        format_sql: false
+  # ── MongoDB ──
+  data:
+    mongodb:
+      uri: mongodb://admin:secret@localhost:27017/demo?authSource=admin
+      auto-index-creation: true
 
 # ── Actuator + Prometheus ──
 management:

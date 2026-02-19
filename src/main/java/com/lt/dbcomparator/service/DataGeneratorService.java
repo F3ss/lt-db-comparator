@@ -2,43 +2,50 @@ package com.lt.dbcomparator.service;
 
 import com.lt.dbcomparator.dto.LoadRequest;
 import com.lt.dbcomparator.dto.LoadStatusResponse;
+import com.lt.dbcomparator.entity.*;
+import com.lt.dbcomparator.repository.ProductRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.data.mongodb.core.BulkOperations;
+import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.sql.PreparedStatement;
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Сервис генерации тестовых данных.
+ * Сервис генерации тестовых данных для MongoDB.
  * <p>
  * Управляется через REST: start(LoadRequest) / stop() / getStatus().
- * Использует {@link JdbcTemplate} batch-insert для максимальной скорости
- * записи.
- * Регистрирует кастомные Micrometer-метрики для мониторинга пропускной
- * способности.
+ * Использует {@link MongoTemplate} bulkOps для максимальной скорости записи
+ * документов.
+ * <p>
+ * Логика:
+ * 1. Формируется полный документ {@link Customer} (с вложенными Profile и
+ * Orders).
+ * 2. В {@link OrderItem} делается SNAPSHOT (копия) данных товара (Product) для
+ * быстрого чтения.
+ * 3. Документы пачками (batchSize) отправляются в Mongo.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DataGeneratorService {
 
-    private final JdbcTemplate jdbcTemplate;
-    private final TransactionTemplate transactionTemplate;
+    private final MongoTemplate mongoTemplate;
+    private final ProductRepository productRepository;
     private final MeterRegistry meterRegistry;
 
     // ── Состояние ──
@@ -63,17 +70,13 @@ public class DataGeneratorService {
     private Timer batchDurationTimer;
 
     // ── Пул продуктов (предзаполняется один раз) ──
-    private List<Long> productIds;
+    private List<Product> cachedProducts;
 
     // ── Оценка пропускной способности ──
-    // Каждый батч = 8 SQL round-trips (4× nextval + 4× INSERT).
-    // FIXED_OVERHEAD_MS — базовая стоимость round-trips, не зависящая от размера
-    // батча.
-    // MS_PER_CUSTOMER_GRAPH — стоимость одного Customer-графа внутри batch INSERT
-    // (1 customer + 1 profile + ~3 orders + ~13.5 items = ~17.5 строк).
-    // estimatedBatchMs = FIXED_OVERHEAD_MS + batchSize × MS_PER_CUSTOMER_GRAPH
-    private static final double FIXED_OVERHEAD_MS = 10.0;
-    private static final double MS_PER_CUSTOMER_GRAPH = 0.2;
+    // Mongo обычно быстрее на запись сложных структур, но overhead на сериализацию
+    // выше.
+    private static final double FIXED_OVERHEAD_MS = 5.0;
+    private static final double MS_PER_CUSTOMER_GRAPH = 0.15;
 
     // ── Справочные данные для генерации ──
     private static final String[] FIRST_NAMES = {
@@ -113,7 +116,7 @@ public class DataGeneratorService {
                 .description("Батчей упало с ошибкой")
                 .register(meterRegistry);
         recordsTotalCounter = Counter.builder("generator.records.total")
-                .description("Всего записей сгенерировано (все таблицы)")
+                .description("Всего документов (Customer) сгенерировано")
                 .register(meterRegistry);
         batchDurationTimer = Timer.builder("generator.batch.duration")
                 .description("Время выполнения одного батча")
@@ -131,22 +134,15 @@ public class DataGeneratorService {
 
         validate(request);
 
-        // ── Определяем кол-во воркеров ──
         int workers = request.getWorkerThreads() > 0
                 ? request.getWorkerThreads()
                 : Math.max(2, Runtime.getRuntime().availableProcessors());
-        request.setWorkerThreads(workers); // сохраняем фактическое значение
+        request.setWorkerThreads(workers);
 
-        // ── Проверка реалистичности запроса ──
         int maxRate = estimateMaxBatchesPerSecond(request.getBatchSize(), workers);
         if (request.getBatchesPerSecond() > maxRate) {
-            throw new IllegalArgumentException(String.format(
-                    "Запрошено %d батчей/сек, но при batchSize=%d и %d воркерах " +
-                            "максимально возможная нагрузка ≈ %d батчей/сек. " +
-                            "Уменьшите batchesPerSecond до %d, уменьшите batchSize, " +
-                            "увеличьте workerThreads или используйте несколько реплик.",
-                    request.getBatchesPerSecond(), request.getBatchSize(),
-                    workers, maxRate, maxRate));
+            log.warn("Запрошено {} батчей/сек, что может быть выше возможностей системы (max ~{}).",
+                    request.getBatchesPerSecond(), maxRate);
         }
 
         this.currentConfig = request;
@@ -159,45 +155,38 @@ public class DataGeneratorService {
 
         ensureProductsExist();
 
-        // ── Worker pool: выполняет generateBatch параллельно ──
         this.workerPool = Executors.newFixedThreadPool(workers, r -> {
             Thread t = new Thread(r, "gen-worker");
             t.setDaemon(true);
             return t;
         });
-        // Семафор ограничивает кол-во одновременно выполняемых батчей (2× воркеров)
         this.inflightPermits = new Semaphore(workers * 2);
 
-        // ── Ticker: отправляет задачи в worker pool с заданной частотой ──
         long periodMs = Math.max(1, 1000L / request.getBatchesPerSecond());
         this.scheduler = Executors.newScheduledThreadPool(1);
         scheduler.scheduleAtFixedRate(this::executeTick, 0, periodMs, TimeUnit.MILLISECONDS);
 
-        log.info("Генератор запущен: batchSize={}, batchesPerSecond={}, workers={}, maxRate={}, duration={}min",
-                request.getBatchSize(), request.getBatchesPerSecond(), workers, maxRate,
-                request.getDurationMinutes());
+        log.info("Mongo генератор запущен: batchSize={}, batchesPerSecond={}, workers={}",
+                request.getBatchSize(), request.getBatchesPerSecond(), workers);
     }
 
     public synchronized void stop() {
         if (!running)
             return;
         running = false;
-        if (scheduler != null) {
+        if (scheduler != null)
             scheduler.shutdown();
-        }
         if (workerPool != null) {
             workerPool.shutdown();
             try {
-                if (!workerPool.awaitTermination(30, TimeUnit.SECONDS)) {
-                    log.warn("Worker pool не завершился за 30с, принудительная остановка");
+                if (!workerPool.awaitTermination(30, TimeUnit.SECONDS))
                     workerPool.shutdownNow();
-                }
             } catch (InterruptedException e) {
                 workerPool.shutdownNow();
                 Thread.currentThread().interrupt();
             }
         }
-        log.info("Генератор остановлен. Всего записей: {}", totalRecords.get());
+        log.info("Генератор остановлен. Всего Document(Customer) записано: {}", totalRecords.get());
     }
 
     public LoadStatusResponse getStatus() {
@@ -222,7 +211,6 @@ public class DataGeneratorService {
         if (!running)
             return;
 
-        // Авто-стоп по истечении времени
         if (currentConfig.getDurationMinutes() > 0) {
             long elapsedMin = java.time.Duration.between(startedAt, Instant.now()).toMinutes();
             if (elapsedMin >= currentConfig.getDurationMinutes()) {
@@ -231,9 +219,7 @@ public class DataGeneratorService {
             }
         }
 
-        // Backpressure: если все воркеры заняты — пропускаем тик
         if (!inflightPermits.tryAcquire()) {
-            log.warn("Worker pool перегружен, батч пропущен");
             return;
         }
 
@@ -243,14 +229,13 @@ public class DataGeneratorService {
         workerPool.submit(() -> {
             Timer.Sample sample = Timer.start(meterRegistry);
             try {
-                transactionTemplate.executeWithoutResult(
-                        status -> generateBatch(currentConfig.getBatchSize()));
+                generateBatch(currentConfig.getBatchSize());
                 completedCount.incrementAndGet();
                 batchesCompletedCounter.increment();
             } catch (Exception e) {
                 failedCount.incrementAndGet();
                 batchesFailedCounter.increment();
-                log.error("Ошибка при записи батча: {}", e.getMessage(), e);
+                log.error("Ошибка при записи батча: {}", e.getMessage());
             } finally {
                 sample.stop(batchDurationTimer);
                 inflightPermits.release();
@@ -258,232 +243,158 @@ public class DataGeneratorService {
         });
     }
 
-    /**
-     * Генерирует один батч: N клиентов → N профилей → ~3N заказов → ~13.5N позиций.
-     * Все вставки через JdbcTemplate.batchUpdate.
-     */
-    private void generateBatch(int customerCount) {
+    private void generateBatch(int batchSize) {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
         LocalDateTime now = LocalDateTime.now();
-        int recordCount = 0;
+        List<Customer> customers = new ArrayList<>(batchSize);
 
-        // 1. Pre-allocate customer IDs
-        List<Long> customerIds = jdbcTemplate.queryForList(
-                "SELECT nextval(pg_get_serial_sequence('customers','id')) FROM generate_series(1,?)",
-                Long.class, customerCount);
-
-        // 2. Insert customers
-        jdbcTemplate.batchUpdate(
-                "INSERT INTO customers (id, first_name, last_name, email, phone, date_of_birth, " +
-                        "registered_at, status, loyalty_points, country) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                customerIds, customerCount,
-                (PreparedStatement ps, Long custId) -> {
-                    ThreadLocalRandom r = ThreadLocalRandom.current();
-                    String fn = pick(FIRST_NAMES, r);
-                    String ln = pick(LAST_NAMES, r);
-                    ps.setLong(1, custId);
-                    ps.setString(2, fn);
-                    ps.setString(3, ln);
-                    ps.setString(4, fn.toLowerCase() + "." + ln.toLowerCase() + custId + "@test.com");
-                    ps.setString(5, "+7" + (9000000000L + r.nextLong(999999999L)));
-                    ps.setObject(6, LocalDate.of(1970 + r.nextInt(40), 1 + r.nextInt(12), 1 + r.nextInt(28)));
-                    ps.setTimestamp(7, Timestamp.valueOf(now));
-                    ps.setString(8, pick(STATUSES, r));
-                    ps.setInt(9, r.nextInt(10000));
-                    ps.setString(10, pick(COUNTRIES, r));
-                });
-        recordCount += customerCount;
-
-        // 3. Insert profiles (1:1 с customer)
-        List<Long> profileIds = jdbcTemplate.queryForList(
-                "SELECT nextval(pg_get_serial_sequence('customer_profiles','id')) FROM generate_series(1,?)",
-                Long.class, customerCount);
-
-        jdbcTemplate.batchUpdate(
-                "INSERT INTO customer_profiles (id, customer_id, avatar_url, bio, preferred_language, " +
-                        "notifications_enabled, address, city, zip_code) VALUES (?,?,?,?,?,?,?,?,?)",
-                profileIds, customerCount,
-                (PreparedStatement ps, Long profId) -> {
-                    ThreadLocalRandom r = ThreadLocalRandom.current();
-                    int idx = profileIds.indexOf(profId);
-                    ps.setLong(1, profId);
-                    ps.setLong(2, customerIds.get(idx));
-                    ps.setString(3, "https://avatar.example.com/" + profId + ".png");
-                    ps.setString(4, "Bio for customer " + customerIds.get(idx));
-                    ps.setString(5, pick(LANGUAGES, r));
-                    ps.setBoolean(6, r.nextBoolean());
-                    ps.setString(7, "Street " + r.nextInt(200) + ", apt " + r.nextInt(100));
-                    ps.setString(8, pick(CITIES, r));
-                    ps.setString(9, String.valueOf(100000 + r.nextInt(899999)));
-                });
-        recordCount += customerCount;
-
-        // 4. Insert orders (1–5 per customer)
-        // Сначала собираем пары (orderId, customerId)
-        int totalOrders = 0;
-        long[][] orderCustomerPairs = new long[customerCount * 5][2]; // max
-        for (Long custId : customerIds) {
-            int orderCount = 1 + rng.nextInt(5);
-            for (int i = 0; i < orderCount; i++) {
-                orderCustomerPairs[totalOrders][1] = custId;
-                totalOrders++;
-            }
+        for (int i = 0; i < batchSize; i++) {
+            customers.add(createRandomCustomer(rng, now));
         }
 
-        if (totalOrders > 0) {
-            List<Long> orderIds = jdbcTemplate.queryForList(
-                    "SELECT nextval(pg_get_serial_sequence('orders','id')) FROM generate_series(1,?)",
-                    Long.class, totalOrders);
+        // Mongo Bulk Insert для максимальной производительности
+        mongoTemplate.bulkOps(BulkOperations.BulkMode.UNORDERED, Customer.class)
+                .insert(customers)
+                .execute();
 
-            for (int i = 0; i < totalOrders; i++) {
-                orderCustomerPairs[i][0] = orderIds.get(i);
-            }
+        totalRecords.addAndGet(batchSize);
+        recordsTotalCounter.increment(batchSize);
+    }
 
-            jdbcTemplate.batchUpdate(
-                    "INSERT INTO orders (id, customer_id, order_number, order_date, status, " +
-                            "total_amount, currency, shipping_address, notes, expected_delivery) " +
-                            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    orderIds, totalOrders,
-                    (PreparedStatement ps, Long ordId) -> {
-                        ThreadLocalRandom r = ThreadLocalRandom.current();
-                        int idx = orderIds.indexOf(ordId);
-                        ps.setLong(1, ordId);
-                        ps.setLong(2, orderCustomerPairs[idx][1]);
-                        ps.setString(3, "ORD-" + ordId);
-                        ps.setTimestamp(4, Timestamp.valueOf(now.minusDays(r.nextInt(365))));
-                        ps.setString(5, pick(ORDER_STATUSES, r));
-                        ps.setBigDecimal(6,
-                                BigDecimal.valueOf(r.nextDouble(10, 10000)).setScale(2, RoundingMode.HALF_UP));
-                        ps.setString(7, pick(CURRENCIES, r));
-                        ps.setString(8, pick(CITIES, r) + ", Street " + r.nextInt(200));
-                        ps.setString(9, r.nextBoolean() ? "Express delivery" : null);
-                        ps.setObject(10, LocalDate.now().plusDays(r.nextInt(30)));
-                    });
-            recordCount += totalOrders;
+    private Customer createRandomCustomer(ThreadLocalRandom r, LocalDateTime now) {
+        String fn = pick(FIRST_NAMES, r);
+        String ln = pick(LAST_NAMES, r);
+        String email = fn.toLowerCase() + "." + ln.toLowerCase() + UUID.randomUUID().toString().substring(0, 8)
+                + "@test.com";
 
-            // 5. Insert order items (2–7 per order)
-            int totalItems = 0;
-            long[][] itemMeta = new long[totalOrders * 7][2]; // [orderId, productId]
-            for (int i = 0; i < totalOrders; i++) {
-                int items = 2 + rng.nextInt(6);
-                for (int j = 0; j < items; j++) {
-                    itemMeta[totalItems][0] = orderIds.get(i);
-                    itemMeta[totalItems][1] = productIds.get(rng.nextInt(productIds.size()));
-                    totalItems++;
-                }
-            }
+        Customer customer = Customer.builder()
+                .firstName(fn)
+                .lastName(ln)
+                .email(email)
+                .phone("+7" + (9000000000L + r.nextLong(999999999L)))
+                .dateOfBirth(LocalDate.of(1970 + r.nextInt(40), 1 + r.nextInt(12), 1 + r.nextInt(28)))
+                .registeredAt(now)
+                .status(pick(STATUSES, r))
+                .loyaltyPoints(r.nextInt(10000))
+                .country(pick(COUNTRIES, r))
+                .build();
 
-            if (totalItems > 0) {
-                List<Long> itemIds = jdbcTemplate.queryForList(
-                        "SELECT nextval(pg_get_serial_sequence('order_items','id')) FROM generate_series(1,?)",
-                        Long.class, totalItems);
+        // 1. Profile (Embedded)
+        customer.setProfile(CustomerProfile.builder()
+                .avatarUrl("https://avatar.example.com/" + r.nextInt(1000) + ".png")
+                .bio("Bio info...")
+                .preferredLanguage(pick(LANGUAGES, r))
+                .notificationsEnabled(r.nextBoolean())
+                .address("Street " + r.nextInt(200) + ", apt " + r.nextInt(100))
+                .city(pick(CITIES, r))
+                .zipCode(String.valueOf(100000 + r.nextInt(899999)))
+                .build());
 
-                jdbcTemplate.batchUpdate(
-                        "INSERT INTO order_items (id, order_id, product_id, quantity, " +
-                                "unit_price, total_price, discount, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                        itemIds, totalItems,
-                        (PreparedStatement ps, Long itemId) -> {
-                            ThreadLocalRandom r = ThreadLocalRandom.current();
-                            int idx = itemIds.indexOf(itemId);
-                            int qty = 1 + r.nextInt(10);
-                            BigDecimal unitPr = BigDecimal.valueOf(r.nextDouble(1, 500)).setScale(2,
-                                    RoundingMode.HALF_UP);
-                            BigDecimal disc = BigDecimal.valueOf(r.nextDouble(0, 50)).setScale(2, RoundingMode.HALF_UP);
-                            ps.setLong(1, itemId);
-                            ps.setLong(2, itemMeta[idx][0]);
-                            ps.setLong(3, itemMeta[idx][1]);
-                            ps.setInt(4, qty);
-                            ps.setBigDecimal(5, unitPr);
-                            ps.setBigDecimal(6, unitPr.multiply(BigDecimal.valueOf(qty)));
-                            ps.setBigDecimal(7, disc);
-                            ps.setTimestamp(8, Timestamp.valueOf(now));
-                        });
-                recordCount += totalItems;
-            }
+        // 2. Orders (Embedded List)
+        int orderCount = 1 + r.nextInt(5);
+        List<Order> orders = new ArrayList<>(orderCount);
+        for (int j = 0; j < orderCount; j++) {
+            orders.add(createRandomOrder(r, now));
         }
+        customer.setOrders(orders);
 
-        totalRecords.addAndGet(recordCount);
-        recordsTotalCounter.increment(recordCount);
+        return customer;
     }
 
-    // ═══════════════════════════════════════════
-    // Утилиты
-    // ═══════════════════════════════════════════
+    private Order createRandomOrder(ThreadLocalRandom r, LocalDateTime now) {
+        Order order = Order.builder()
+                .orderNumber("ORD-" + UUID.randomUUID())
+                .orderDate(now.minusDays(r.nextInt(365)))
+                .status(pick(ORDER_STATUSES, r))
+                .totalAmount(BigDecimal.valueOf(r.nextDouble(10, 10000)).setScale(2, RoundingMode.HALF_UP))
+                .currency(pick(CURRENCIES, r))
+                .shippingAddress(pick(CITIES, r) + ", Street " + r.nextInt(200))
+                .notes(r.nextBoolean() ? "Express" : null)
+                .expectedDelivery(LocalDate.now().plusDays(r.nextInt(30)))
+                .build();
 
-    /**
-     * Оценивает максимально возможное кол-во батчей/сек для данного инстанса.
-     * <p>
-     * Формула: estimatedBatchMs = FIXED_OVERHEAD_MS + batchSize ×
-     * MS_PER_CUSTOMER_GRAPH
-     * <br>
-     * maxRate = workerThreads × (1000 / estimatedBatchMs)
-     * <p>
-     * Примеры (4 воркера):
-     * <ul>
-     * <li>batchSize=50 → ~20ms/batch → max ~200 batch/sec</li>
-     * <li>batchSize=100 → ~30ms/batch → max ~133 batch/sec</li>
-     * <li>batchSize=500 → ~110ms/batch → max ~36 batch/sec</li>
-     * </ul>
-     */
-    static int estimateMaxBatchesPerSecond(int batchSize, int workerThreads) {
-        double estimatedBatchMs = FIXED_OVERHEAD_MS + batchSize * MS_PER_CUSTOMER_GRAPH;
-        return Math.max(1, (int) (workerThreads * (1000.0 / estimatedBatchMs)));
+        // 3. Order Items (Embedded)
+        int itemCount = 2 + r.nextInt(6);
+        List<OrderItem> items = new ArrayList<>(itemCount);
+        for (int k = 0; k < itemCount; k++) {
+            items.add(createRandomOrderItem(r, now));
+        }
+        order.setItems(items);
+
+        return order;
     }
 
-    /**
-     * Инициализация справочника продуктов.
-     * pg_advisory_xact_lock гарантирует, что при одновременном старте нескольких
-     * реплик только одна выполнит INSERT; остальные подождут и увидят данные.
-     */
+    private OrderItem createRandomOrderItem(ThreadLocalRandom r, LocalDateTime now) {
+        // Берем случайный продукт из кэша
+        Product product = cachedProducts.get(r.nextInt(cachedProducts.size()));
+        int qty = 1 + r.nextInt(10);
+        BigDecimal total = product.getPrice().multiply(BigDecimal.valueOf(qty));
+
+        return OrderItem.builder()
+                .productId(product.getId())
+                // SNAPSHOTTING: Копируем данные товара в момент покупки
+                .productName(product.getName())
+                .productSku(product.getSku())
+                .productCategory(product.getCategory())
+                .quantity(qty)
+                .unitPrice(product.getPrice())
+                .totalPrice(total)
+                .discount(BigDecimal.ZERO)
+                .createdAt(now)
+                .build();
+    }
+
     private void ensureProductsExist() {
-        transactionTemplate.executeWithoutResult(status -> {
-            jdbcTemplate.execute("SELECT pg_advisory_xact_lock(1000042)");
-            Long count = jdbcTemplate.queryForObject("SELECT count(*) FROM products", Long.class);
-            if (count == null || count == 0) {
-                log.info("Предзаполнение {} продуктов...", PRODUCT_POOL_SIZE);
-                generateProducts();
-            }
-        }); // lock автоматически освобождается при commit
-        productIds = jdbcTemplate.queryForList("SELECT id FROM products", Long.class);
-        log.info("Пул продуктов: {} шт.", productIds.size());
+        long count = productRepository.count();
+
+        if (count == 0) {
+            log.info("Продукты не найдены в БД (count=0). Генерация {} продуктов...", PRODUCT_POOL_SIZE);
+            generateProducts();
+            cachedProducts = productRepository.findAll();
+        } else if (cachedProducts == null || cachedProducts.isEmpty()) {
+            log.info("Продукты есть в БД, загружаем в кэш...");
+            cachedProducts = productRepository.findAll();
+        }
+
+        if (cachedProducts != null) {
+            log.info("Генератор готов. Продуктов в кэше: {}", cachedProducts.size());
+        }
     }
 
     private void generateProducts() {
+        List<Product> products = new ArrayList<>(PRODUCT_POOL_SIZE);
         LocalDateTime now = LocalDateTime.now();
+        ThreadLocalRandom r = ThreadLocalRandom.current();
 
-        List<Long> ids = jdbcTemplate.queryForList(
-                "SELECT nextval(pg_get_serial_sequence('products','id')) FROM generate_series(1,?)",
-                Long.class, PRODUCT_POOL_SIZE);
-
-        jdbcTemplate.batchUpdate(
-                "INSERT INTO products (id, name, sku, description, price, category, " +
-                        "weight, in_stock, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                ids, PRODUCT_POOL_SIZE,
-                (PreparedStatement ps, Long prodId) -> {
-                    ThreadLocalRandom r = ThreadLocalRandom.current();
-                    String cat = pick(CATEGORIES, r);
-                    ps.setLong(1, prodId);
-                    ps.setString(2, cat + " Item #" + prodId);
-                    ps.setString(3, "SKU-" + String.format("%06d", prodId));
-                    ps.setString(4, "Description for " + cat + " product #" + prodId);
-                    ps.setBigDecimal(5, BigDecimal.valueOf(r.nextDouble(0.5, 9999)).setScale(2, RoundingMode.HALF_UP));
-                    ps.setString(6, cat);
-                    ps.setDouble(7, Math.round(r.nextDouble(0.01, 50.0) * 100.0) / 100.0);
-                    ps.setBoolean(8, r.nextBoolean());
-                    ps.setTimestamp(9, Timestamp.valueOf(now));
-                    ps.setTimestamp(10, Timestamp.valueOf(now));
-                });
+        for (int i = 0; i < PRODUCT_POOL_SIZE; i++) {
+            String cat = pick(CATEGORIES, r);
+            products.add(Product.builder()
+                    .name(cat + " Item #" + i)
+                    .sku("SKU-" + UUID.randomUUID().toString().substring(0, 8))
+                    .description("Description for " + cat)
+                    .price(BigDecimal.valueOf(r.nextDouble(0.5, 9999)).setScale(2, RoundingMode.HALF_UP))
+                    .category(cat)
+                    .weight(Math.round(r.nextDouble(0.01, 50.0) * 100.0) / 100.0)
+                    .inStock(true)
+                    .createdAt(now)
+                    .updatedAt(now)
+                    .build());
+        }
+        productRepository.saveAll(products);
     }
 
     private void validate(LoadRequest req) {
         if (req.getBatchSize() <= 0)
-            throw new IllegalArgumentException("batchSize должен быть > 0");
+            throw new IllegalArgumentException("batchSize > 0");
         if (req.getBatchesPerSecond() <= 0)
-            throw new IllegalArgumentException("batchesPerSecond должен быть > 0");
+            throw new IllegalArgumentException("batchesPerSecond > 0");
         if (req.getDurationMinutes() <= 0)
-            throw new IllegalArgumentException("durationMinutes должен быть > 0");
-        if (req.getWorkerThreads() < 0)
-            throw new IllegalArgumentException("workerThreads должен быть >= 0 (0 = авто)");
+            throw new IllegalArgumentException("durationMinutes > 0");
+    }
+
+    private static int estimateMaxBatchesPerSecond(int batchSize, int workerThreads) {
+        double estimatedBatchMs = FIXED_OVERHEAD_MS + batchSize * MS_PER_CUSTOMER_GRAPH;
+        return Math.max(1, (int) (workerThreads * (1000.0 / estimatedBatchMs)));
     }
 
     private static String pick(String[] arr, ThreadLocalRandom rng) {

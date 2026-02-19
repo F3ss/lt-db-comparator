@@ -1,19 +1,14 @@
 package com.lt.dbcomparator.entity;
 
-import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
- * Позиция заказа — ManyToOne → Order, ManyToOne → Product.
+ * Позиция заказа — вложенный объект в Order.
+ * Содержит SNAPSHOT данных товара на момент покупки (Denormalization).
  */
-@Entity
-@Table(name = "order_items", indexes = {
-        @Index(name = "idx_item_order", columnList = "order_id"),
-        @Index(name = "idx_item_product", columnList = "product_id")
-})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -21,30 +16,21 @@ import java.time.LocalDateTime;
 @Builder
 public class OrderItem {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    // Ссылка на товар (для аналитики/генерации)
+    private String productId;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "order_id", nullable = false)
-    private Order order;
+    // ── Snapshot данных товара (чтобы не делать lookup) ──
+    private String productName;
+    private String productSku;
+    private String productCategory;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "product_id", nullable = false)
-    private Product product;
-
-    @Column(nullable = false)
     private Integer quantity;
 
-    @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal unitPrice;
 
-    @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal totalPrice;
 
-    @Column(precision = 12, scale = 2)
     private BigDecimal discount;
 
-    @Column(nullable = false)
     private LocalDateTime createdAt;
 }

@@ -1,7 +1,6 @@
 package com.lt.dbcomparator.dto;
 
 import com.lt.dbcomparator.entity.*;
-import com.lt.dbcomparator.entity.*;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.math.BigDecimal;
@@ -15,7 +14,7 @@ import java.util.List;
  */
 @Schema(description = "Клиент со связанными данными")
 public record CustomerResponse(
-        Long id,
+        String id,
         String firstName,
         String lastName,
         String email,
@@ -50,7 +49,6 @@ public record CustomerResponse(
 
     @Schema(description = "Профиль клиента")
     public record ProfileResponse(
-            Long id,
             String avatarUrl,
             String bio,
             String preferredLanguage,
@@ -60,7 +58,7 @@ public record CustomerResponse(
             String zipCode) {
         public static ProfileResponse from(CustomerProfile p) {
             return new ProfileResponse(
-                    p.getId(), p.getAvatarUrl(), p.getBio(),
+                    p.getAvatarUrl(), p.getBio(),
                     p.getPreferredLanguage(), p.getNotificationsEnabled(),
                     p.getAddress(), p.getCity(), p.getZipCode());
         }
@@ -68,7 +66,7 @@ public record CustomerResponse(
 
     @Schema(description = "Заказ")
     public record OrderResponse(
-            Long id,
+            String id,
             String orderNumber,
             LocalDateTime orderDate,
             String status,
@@ -91,7 +89,6 @@ public record CustomerResponse(
 
     @Schema(description = "Позиция заказа")
     public record ItemResponse(
-            Long id,
             Integer quantity,
             BigDecimal unitPrice,
             BigDecimal totalPrice,
@@ -100,16 +97,26 @@ public record CustomerResponse(
             ProductResponse product) {
         public static ItemResponse from(OrderItem item) {
             return new ItemResponse(
-                    item.getId(), item.getQuantity(),
+                    item.getQuantity(),
                     item.getUnitPrice(), item.getTotalPrice(), item.getDiscount(),
                     item.getCreatedAt(),
-                    item.getProduct() != null ? ProductResponse.from(item.getProduct()) : null);
+                    // Reconstruct ProductResponse from snapshot data
+                    new ProductResponse(
+                            item.getProductId(),
+                            item.getProductName(),
+                            item.getProductSku(),
+                            null, // description not in snapshot
+                            item.getUnitPrice(), // price at moment of purchase
+                            item.getProductCategory(),
+                            null, // weight
+                            null // inStock
+                    ));
         }
     }
 
     @Schema(description = "Товар")
     public record ProductResponse(
-            Long id,
+            String id,
             String name,
             String sku,
             String description,

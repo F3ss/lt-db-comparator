@@ -25,9 +25,9 @@ repositories {
 }
 
 dependencies {
-	// Web + JPA + Actuator
+	// Web + Actuator
 	implementation 'org.springframework.boot:spring-boot-starter-web'
-	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation 'org.springframework.boot:spring-boot-starter-data-mongodb'
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 
 	// Metrics — Prometheus
@@ -36,9 +36,6 @@ dependencies {
 	// Swagger / OpenAPI
 	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.4'
 
-	// PostgreSQL
-	runtimeOnly 'org.postgresql:postgresql'
-
 	// Lombok
 	compileOnly 'org.projectlombok:lombok'
 	annotationProcessor 'org.projectlombok:lombok'
@@ -46,7 +43,7 @@ dependencies {
 	// Test
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'org.springframework.boot:spring-boot-testcontainers'
-	testImplementation 'org.testcontainers:postgresql'
+	testImplementation 'org.testcontainers:mongodb'
 	testImplementation 'org.testcontainers:junit-jupiter'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

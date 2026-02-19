@@ -1,23 +1,9 @@
 package com.lt.dbcomparator.repository;
 
 import com.lt.dbcomparator.entity.Customer;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.repository.EntityGraph;
-import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.stereotype.Repository;
 
-import java.util.Optional;
-
-public interface CustomerRepository extends JpaRepository<Customer, Long> {
-
-    /**
-     * Загрузка клиента со всеми связями одним запросом (JOIN FETCH).
-     */
-    @EntityGraph(attributePaths = { "profile", "orders", "orders.items", "orders.items.product" })
-    Optional<Customer> findWithDetailsById(Long id);
-
-    /**
-     * Страничная выдача (без загрузки связей — только Customer).
-     */
-    Page<Customer> findAll(Pageable pageable);
+@Repository
+public interface CustomerRepository extends MongoRepository<Customer, String> {
 }
