@@ -1,7 +1,7 @@
 plugins {
 	id 'java'
-	id 'org.springframework.boot' version '2.7.18'
-	id 'io.spring.dependency-management' version '1.0.15.RELEASE'
+	id 'org.springframework.boot' version '3.5.10'
+	id 'io.spring.dependency-management' version '1.1.7'
 }
 
 group = 'com.lt'
@@ -10,7 +10,7 @@ description = 'DB Compare'
 
 java {
 	toolchain {
-		languageVersion = JavaLanguageVersion.of(11)
+		languageVersion = JavaLanguageVersion.of(21)
 	}
 }
 
@@ -31,10 +31,10 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 
 	// Metrics — Prometheus
-	runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+	implementation 'io.micrometer:micrometer-registry-prometheus'
 
 	// Swagger / OpenAPI
-	implementation 'org.springdoc:springdoc-openapi-ui:1.7.0'
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.4'
 
 	// PostgreSQL
 	runtimeOnly 'org.postgresql:postgresql'
@@ -44,24 +44,13 @@ dependencies {
 	annotationProcessor 'org.projectlombok:lombok'
 
 	// Test
-	// Test
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'org.springframework.boot:spring-boot-testcontainers'
 	testImplementation 'org.testcontainers:postgresql'
 	testImplementation 'org.testcontainers:junit-jupiter'
-	testImplementation 'org.awaitility:awaitility'
-}
-
-dependencyManagement {
-	imports {
-		mavenBom "org.testcontainers:testcontainers-bom:1.19.7"
-	}
-}
-
-tasks.withType(JavaCompile) {
-	options.encoding = 'UTF-8'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 tasks.named('test') {
 	useJUnitPlatform()
-	systemProperty 'file.encoding', 'UTF-8'
 }
