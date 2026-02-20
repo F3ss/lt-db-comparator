@@ -223,7 +223,7 @@ public class DataGeneratorService {
     // Внутренняя механика
     // ═══════════════════════════════════════════
 
-    private void executeTick() {
+    private synchronized void executeTick() {
         if (!running)
             return;
 
