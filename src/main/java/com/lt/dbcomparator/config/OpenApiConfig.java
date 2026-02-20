@@ -9,22 +9,22 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class OpenApiConfig {
 
-    @Bean
-    public OpenAPI demoOpenAPI() {
-        return new OpenAPI()
-                .info(new Info()
-                        .title("Demo — PostgreSQL Load Test API")
-                        .version("1.0")
-                        .description(
-                                """
-                                        Инструмент нагрузочного тестирования PostgreSQL.
-
-                                        **Генерация данных** — запускается через POST /api/generator/start с параметрами нагрузки.
-
-                                        **Чтение** — GET /api/customers/{id} возвращает клиента со связями (Profile, Orders, Items, Products).
-
-                                        **Метрики** — /actuator/prometheus, /actuator/metrics
-                                        """)
-                        .contact(new Contact().name("Demo Team")));
-    }
+        @Bean
+        public OpenAPI demoOpenAPI() {
+                return new OpenAPI()
+                                .info(new Info()
+                                                .title("Demo — PostgreSQL Load Test API")
+                                                .version("1.0")
+                                                .description(
+                                                                "Инструмент нагрузочного тестирования PostgreSQL.\n" +
+                                                                                "\n" +
+                                                                                "**Генерация данных** — запускается через POST /api/generator/start с параметрами нагрузки.\n"
+                                                                                +
+                                                                                "\n" +
+                                                                                "**Чтение** — GET /api/customers/{id} возвращает клиента со связями (Profile, Orders, Items, Products).\n"
+                                                                                +
+                                                                                "\n" +
+                                                                                "**Метрики** — /actuator/prometheus, /actuator/metrics\n")
+                                                .contact(new Contact().name("Demo Team")));
+        }
 }

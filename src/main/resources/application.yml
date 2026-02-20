@@ -34,15 +34,14 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: "*"
   endpoint:
     prometheus:
       enabled: true
-  prometheus:
-    metrics:
-      export:
-        enabled: true
   metrics:
+    export:
+      prometheus:
+        enabled: true
     tags:
       application: ${spring.application.name}
 
