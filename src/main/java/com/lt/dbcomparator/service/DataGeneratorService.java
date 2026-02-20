@@ -51,8 +51,8 @@ public class DataGeneratorService {
     private ScheduledExecutorService scheduler;
     private ExecutorService workerPool;
     private Semaphore inflightPermits;
-    private LoadRequest currentConfig;
-    private Instant startedAt;
+    private volatile LoadRequest currentConfig;
+    private volatile Instant startedAt;
 
     // ── Счётчики ──
     private final AtomicLong totalRecords = new AtomicLong(0);
@@ -61,11 +61,11 @@ public class DataGeneratorService {
     private final AtomicLong failedCount = new AtomicLong(0);
 
     // ── Метрики (Micrometer) ──
-    private Counter batchesSubmittedCounter;
-    private Counter batchesCompletedCounter;
-    private Counter batchesFailedCounter;
-    private Counter recordsTotalCounter;
-    private Timer batchDurationTimer;
+    private volatile Counter batchesSubmittedCounter;
+    private volatile Counter batchesCompletedCounter;
+    private volatile Counter batchesFailedCounter;
+    private volatile Counter recordsTotalCounter;
+    private volatile Timer batchDurationTimer;
 
     // ── Пул продуктов (предзаполняется один раз) ──
     private List<Long> productIds;
