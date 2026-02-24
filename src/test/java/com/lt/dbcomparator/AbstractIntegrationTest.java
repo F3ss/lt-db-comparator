@@ -4,6 +4,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.utility.DockerImageName;
 
 /**
  * Базовый класс для интеграционных тестов.
@@ -16,6 +18,7 @@ public abstract class AbstractIntegrationTest {
     // НЕ используем @Container / @Testcontainers, чтобы Spring Context мог
     // кэшироваться.
     static final PostgreSQLContainer<?> POSTGRES;
+    static final KafkaContainer KAFKA;
 
     static {
         POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
@@ -23,6 +26,9 @@ public abstract class AbstractIntegrationTest {
                 .withUsername("test")
                 .withPassword("test");
         POSTGRES.start();
+
+        KAFKA = new KafkaContainer(DockerImageName.parse("apache/kafka-native:3.8.0"));
+        KAFKA.start();
     }
 
     @DynamicPropertySource
@@ -31,5 +37,6 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
+        registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
     }
 }

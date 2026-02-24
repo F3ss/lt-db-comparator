@@ -7,14 +7,15 @@ import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.Optional;
+import java.util.UUID;
 
-public interface CustomerRepository extends JpaRepository<Customer, Long> {
+public interface CustomerRepository extends JpaRepository<Customer, UUID> {
 
     /**
      * Загрузка клиента со всеми связями одним запросом (JOIN FETCH).
      */
     @EntityGraph(attributePaths = { "profile", "orders", "orders.items", "orders.items.product" })
-    Optional<Customer> findWithDetailsById(Long id);
+    Optional<Customer> findWithDetailsById(UUID id);
 
     /**
      * Страничная выдача (без загрузки связей — только Customer).

@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,6 +25,9 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired
     private DataGeneratorService generatorService;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @BeforeEach
     void generateData() {
@@ -45,7 +49,9 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
     @DisplayName("GET /api/customers/{id} — возвращает клиента со связями")
     void shouldReturnCustomerWithDetails() {
         // when
-        ResponseEntity<String> response = restTemplate.getForEntity("/api/customers/1", String.class);
+        java.util.UUID customerId = jdbcTemplate.queryForObject("SELECT id FROM customers LIMIT 1",
+                java.util.UUID.class);
+        ResponseEntity<String> response = restTemplate.getForEntity("/api/customers/" + customerId, String.class);
 
         // then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -76,7 +82,7 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
     void shouldReturn500ForNonExistentCustomer() {
         // when
         ResponseEntity<String> response = restTemplate.getForEntity(
-                "/api/customers/999999999", String.class);
+                "/api/customers/" + java.util.UUID.randomUUID().toString(), String.class);
 
         // then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);

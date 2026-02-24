@@ -4,6 +4,8 @@ import com.lt.dbcomparator.dto.CustomerResponse;
 import com.lt.dbcomparator.entity.Customer;
 import com.lt.dbcomparator.repository.CustomerRepository;
 import lombok.RequiredArgsConstructor;
+
+import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -23,7 +25,7 @@ public class CustomerService {
      * Загрузить клиента со всем графом связей: Profile → Orders → Items → Products.
      */
     @Transactional(readOnly = true)
-    public CustomerResponse getById(Long id) {
+    public CustomerResponse getById(UUID id) {
         Customer customer = customerRepository.findWithDetailsById(id)
                 .orElseThrow(() -> new RuntimeException("Customer not found: id=" + id));
         return CustomerResponse.from(customer);

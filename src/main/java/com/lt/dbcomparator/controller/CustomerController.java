@@ -12,6 +12,8 @@ import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.UUID;
+
 /**
  * Чтение данных клиентов — для нагрузочного тестирования на чтение.
  */
@@ -26,7 +28,7 @@ public class CustomerController {
     @Operation(summary = "Получить клиента по ID", description = "Возвращает клиента со всем графом: Profile, Orders → Items → Products.")
     @GetMapping("/{id}")
     public ResponseEntity<CustomerResponse> getById(
-            @Parameter(description = "ID клиента", example = "1") @PathVariable Long id) {
+            @Parameter(description = "ID клиента", example = "1") @PathVariable UUID id) {
         return ResponseEntity.ok(customerService.getById(id));
     }
 

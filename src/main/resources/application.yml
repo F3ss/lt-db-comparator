@@ -29,6 +29,16 @@ spring:
         order_inserts: true
         format_sql: false
 
+# ── Kafka ──
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: lt-db-comparator-group
+      auto-offset-reset: earliest
+    listener:
+      type: batch
+      concurrency: 2
+
 # ── Actuator + Prometheus ──
 management:
   endpoints:

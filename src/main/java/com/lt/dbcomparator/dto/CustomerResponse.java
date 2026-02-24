@@ -8,6 +8,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * DTO для ответа GET /api/customers/{id} — Customer с полным графом связей.
@@ -15,7 +16,7 @@ import java.util.List;
  */
 @Schema(description = "Клиент со связанными данными")
 public record CustomerResponse(
-        Long id,
+        UUID id,
         String firstName,
         String lastName,
         String email,
@@ -50,7 +51,7 @@ public record CustomerResponse(
 
     @Schema(description = "Профиль клиента")
     public record ProfileResponse(
-            Long id,
+            UUID id,
             String avatarUrl,
             String bio,
             String preferredLanguage,
@@ -68,7 +69,7 @@ public record CustomerResponse(
 
     @Schema(description = "Заказ")
     public record OrderResponse(
-            Long id,
+            UUID id,
             String orderNumber,
             LocalDateTime orderDate,
             String status,
@@ -91,7 +92,7 @@ public record CustomerResponse(
 
     @Schema(description = "Позиция заказа")
     public record ItemResponse(
-            Long id,
+            UUID id,
             Integer quantity,
             BigDecimal unitPrice,
             BigDecimal totalPrice,
@@ -109,7 +110,7 @@ public record CustomerResponse(
 
     @Schema(description = "Товар")
     public record ProductResponse(
-            Long id,
+            UUID id,
             String name,
             String sku,
             String description,

@@ -22,6 +22,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.UUID;
 
 /**
  * Сервис генерации тестовых данных.
@@ -63,7 +64,7 @@ public class DataGeneratorService {
     private volatile Timer batchDurationTimer;
 
     // ── Пул продуктов (предзаполняется один раз) ──
-    private List<Long> productIds;
+    private List<UUID> productIds;
 
     // ── Оценка пропускной способности ──
     // Каждый батч = 8 SQL round-trips (4× nextval + 4× INSERT).
@@ -259,6 +260,36 @@ public class DataGeneratorService {
     }
 
     /**
+     * Запуск генерации одного батча из Kafka.
+     * Не зависит от состояния start/stop основного цикла,
+     * но использует те же метрики.
+     * 
+     * @param batchSize размер батча
+     */
+    public void generateFromKafka(int batchSize) {
+        if (productIds == null || productIds.isEmpty()) {
+            ensureProductsExist();
+        }
+
+        submittedCount.incrementAndGet();
+        batchesSubmittedCounter.increment();
+
+        Timer.Sample sample = Timer.start(meterRegistry);
+        try {
+            transactionTemplate.executeWithoutResult(status -> generateBatch(batchSize));
+            completedCount.incrementAndGet();
+            batchesCompletedCounter.increment();
+        } catch (Exception e) {
+            failedCount.incrementAndGet();
+            batchesFailedCounter.increment();
+            log.error("Ошибка при записи батча из Kafka: {}", e.getMessage(), e);
+            throw e; // Пробрасываем ошибку, чтобы KafkaListener мог её обработать при необходимости
+        } finally {
+            sample.stop(batchDurationTimer);
+        }
+    }
+
+    /**
      * Генерирует один батч: N клиентов → N профилей → ~3N заказов → ~13.5N позиций.
      * Все вставки через JdbcTemplate.batchUpdate.
      */
@@ -268,20 +299,20 @@ public class DataGeneratorService {
         int recordCount = 0;
 
         // 1. Pre-allocate customer IDs
-        List<Long> customerIds = jdbcTemplate.queryForList(
-                "SELECT nextval(pg_get_serial_sequence('customers','id')) FROM generate_series(1,?)",
-                Long.class, customerCount);
+        List<UUID> customerIds = new java.util.ArrayList<>(customerCount);
+        for (int i = 0; i < customerCount; i++)
+            customerIds.add(UUID.randomUUID());
 
         // 2. Insert customers
         jdbcTemplate.batchUpdate(
                 "INSERT INTO customers (id, first_name, last_name, email, phone, date_of_birth, " +
                         "registered_at, status, loyalty_points, country) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 customerIds, customerCount,
-                (PreparedStatement ps, Long custId) -> {
+                (PreparedStatement ps, UUID custId) -> {
                     ThreadLocalRandom r = ThreadLocalRandom.current();
                     String fn = pick(FIRST_NAMES, r);
                     String ln = pick(LAST_NAMES, r);
-                    ps.setLong(1, custId);
+                    ps.setObject(1, custId);
                     ps.setString(2, fn);
                     ps.setString(3, ln);
                     ps.setString(4, fn.toLowerCase() + "." + ln.toLowerCase() + custId + "@test.com");
@@ -295,19 +326,19 @@ public class DataGeneratorService {
         recordCount += customerCount;
 
         // 3. Insert profiles (1:1 с customer)
-        List<Long> profileIds = jdbcTemplate.queryForList(
-                "SELECT nextval(pg_get_serial_sequence('customer_profiles','id')) FROM generate_series(1,?)",
-                Long.class, customerCount);
+        List<UUID> profileIds = new java.util.ArrayList<>(customerCount);
+        for (int i = 0; i < customerCount; i++)
+            profileIds.add(UUID.randomUUID());
 
         jdbcTemplate.batchUpdate(
                 "INSERT INTO customer_profiles (id, customer_id, avatar_url, bio, preferred_language, " +
                         "notifications_enabled, address, city, zip_code) VALUES (?,?,?,?,?,?,?,?,?)",
                 profileIds, customerCount,
-                (PreparedStatement ps, Long profId) -> {
+                (PreparedStatement ps, UUID profId) -> {
                     ThreadLocalRandom r = ThreadLocalRandom.current();
                     int idx = profileIds.indexOf(profId);
-                    ps.setLong(1, profId);
-                    ps.setLong(2, customerIds.get(idx));
+                    ps.setObject(1, profId);
+                    ps.setObject(2, customerIds.get(idx));
                     ps.setString(3, "https://avatar.example.com/" + profId + ".png");
                     ps.setString(4, "Bio for customer " + customerIds.get(idx));
                     ps.setString(5, pick(LANGUAGES, r));
@@ -321,8 +352,8 @@ public class DataGeneratorService {
         // 4. Insert orders (1–5 per customer)
         // Сначала собираем пары (orderId, customerId)
         int totalOrders = 0;
-        long[][] orderCustomerPairs = new long[customerCount * 5][2]; // max
-        for (Long custId : customerIds) {
+        UUID[][] orderCustomerPairs = new UUID[customerCount * 5][2]; // max
+        for (UUID custId : customerIds) {
             int orderCount = 1 + rng.nextInt(5);
             for (int i = 0; i < orderCount; i++) {
                 orderCustomerPairs[totalOrders][1] = custId;
@@ -331,9 +362,9 @@ public class DataGeneratorService {
         }
 
         if (totalOrders > 0) {
-            List<Long> orderIds = jdbcTemplate.queryForList(
-                    "SELECT nextval(pg_get_serial_sequence('orders','id')) FROM generate_series(1,?)",
-                    Long.class, totalOrders);
+            List<UUID> orderIds = new java.util.ArrayList<>(totalOrders);
+            for (int i = 0; i < totalOrders; i++)
+                orderIds.add(UUID.randomUUID());
 
             for (int i = 0; i < totalOrders; i++) {
                 orderCustomerPairs[i][0] = orderIds.get(i);
@@ -344,11 +375,11 @@ public class DataGeneratorService {
                             "total_amount, currency, shipping_address, notes, expected_delivery) " +
                             "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     orderIds, totalOrders,
-                    (PreparedStatement ps, Long ordId) -> {
+                    (PreparedStatement ps, UUID ordId) -> {
                         ThreadLocalRandom r = ThreadLocalRandom.current();
                         int idx = orderIds.indexOf(ordId);
-                        ps.setLong(1, ordId);
-                        ps.setLong(2, orderCustomerPairs[idx][1]);
+                        ps.setObject(1, ordId);
+                        ps.setObject(2, orderCustomerPairs[idx][1]);
                         ps.setString(3, "ORD-" + ordId);
                         ps.setTimestamp(4, Timestamp.valueOf(now.minusDays(r.nextInt(365))));
                         ps.setString(5, pick(ORDER_STATUSES, r));
@@ -363,7 +394,7 @@ public class DataGeneratorService {
 
             // 5. Insert order items (2–7 per order)
             int totalItems = 0;
-            long[][] itemMeta = new long[totalOrders * 7][2]; // [orderId, productId]
+            UUID[][] itemMeta = new UUID[totalOrders * 7][2]; // [orderId, productId]
             for (int i = 0; i < totalOrders; i++) {
                 int items = 2 + rng.nextInt(6);
                 for (int j = 0; j < items; j++) {
@@ -374,24 +405,24 @@ public class DataGeneratorService {
             }
 
             if (totalItems > 0) {
-                List<Long> itemIds = jdbcTemplate.queryForList(
-                        "SELECT nextval(pg_get_serial_sequence('order_items','id')) FROM generate_series(1,?)",
-                        Long.class, totalItems);
+                List<UUID> itemIds = new java.util.ArrayList<>(totalItems);
+                for (int i = 0; i < totalItems; i++)
+                    itemIds.add(UUID.randomUUID());
 
                 jdbcTemplate.batchUpdate(
                         "INSERT INTO order_items (id, order_id, product_id, quantity, " +
                                 "unit_price, total_price, discount, created_at) VALUES (?,?,?,?,?,?,?,?)",
                         itemIds, totalItems,
-                        (PreparedStatement ps, Long itemId) -> {
+                        (PreparedStatement ps, UUID itemId) -> {
                             ThreadLocalRandom r = ThreadLocalRandom.current();
                             int idx = itemIds.indexOf(itemId);
                             int qty = 1 + r.nextInt(10);
                             BigDecimal unitPr = BigDecimal.valueOf(r.nextDouble(1, 500)).setScale(2,
                                     RoundingMode.HALF_UP);
                             BigDecimal disc = BigDecimal.valueOf(r.nextDouble(0, 50)).setScale(2, RoundingMode.HALF_UP);
-                            ps.setLong(1, itemId);
-                            ps.setLong(2, itemMeta[idx][0]);
-                            ps.setLong(3, itemMeta[idx][1]);
+                            ps.setObject(1, itemId);
+                            ps.setObject(2, itemMeta[idx][0]);
+                            ps.setObject(3, itemMeta[idx][1]);
                             ps.setInt(4, qty);
                             ps.setBigDecimal(5, unitPr);
                             ps.setBigDecimal(6, unitPr.multiply(BigDecimal.valueOf(qty)));
@@ -444,27 +475,27 @@ public class DataGeneratorService {
                 generateProducts();
             }
         }); // lock автоматически освобождается при commit
-        productIds = jdbcTemplate.queryForList("SELECT id FROM products", Long.class);
+        productIds = jdbcTemplate.queryForList("SELECT id FROM products", UUID.class);
         log.info("Пул продуктов: {} шт.", productIds.size());
     }
 
     private void generateProducts() {
         LocalDateTime now = LocalDateTime.now();
 
-        List<Long> ids = jdbcTemplate.queryForList(
-                "SELECT nextval(pg_get_serial_sequence('products','id')) FROM generate_series(1,?)",
-                Long.class, PRODUCT_POOL_SIZE);
+        List<UUID> ids = new java.util.ArrayList<>(PRODUCT_POOL_SIZE);
+        for (int i = 0; i < PRODUCT_POOL_SIZE; i++)
+            ids.add(UUID.randomUUID());
 
         jdbcTemplate.batchUpdate(
                 "INSERT INTO products (id, name, sku, description, price, category, " +
                         "weight, in_stock, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 ids, PRODUCT_POOL_SIZE,
-                (PreparedStatement ps, Long prodId) -> {
+                (PreparedStatement ps, UUID prodId) -> {
                     ThreadLocalRandom r = ThreadLocalRandom.current();
                     String cat = pick(CATEGORIES, r);
-                    ps.setLong(1, prodId);
+                    ps.setObject(1, prodId);
                     ps.setString(2, cat + " Item #" + prodId);
-                    ps.setString(3, "SKU-" + String.format("%06d", prodId));
+                    ps.setString(3, "SKU-" + prodId);
                     ps.setString(4, "Description for " + cat + " product #" + prodId);
                     ps.setBigDecimal(5, BigDecimal.valueOf(r.nextDouble(0.5, 9999)).setScale(2, RoundingMode.HALF_UP));
                     ps.setString(6, cat);

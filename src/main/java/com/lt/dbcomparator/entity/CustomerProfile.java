@@ -3,6 +3,8 @@ package com.lt.dbcomparator.entity;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.util.UUID;
+
 /**
  * Профиль клиента — OneToOne связь с Customer.
  */
@@ -16,8 +18,8 @@ import lombok.*;
 public class CustomerProfile {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
 
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "customer_id", nullable = false, unique = true)
