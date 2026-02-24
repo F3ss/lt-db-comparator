@@ -127,6 +127,31 @@ public class DataGeneratorService {
     // Публичное API
     // ═══════════════════════════════════════════
 
+    /**
+     * Сгенерировать и сохранить один батч (например, по триггеру из Kafka).
+     */
+    public synchronized void generateAndSaveBatch(int batchSize) {
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("batchSize должен быть > 0");
+        }
+        ensureProductsExist();
+
+        Timer.Sample sample = Timer.start(meterRegistry);
+        try {
+            generateBatch(batchSize);
+            completedCount.incrementAndGet();
+            batchesCompletedCounter.increment();
+            log.info("Батч размером {} успешно записан", batchSize);
+        } catch (Exception e) {
+            failedCount.incrementAndGet();
+            batchesFailedCounter.increment();
+            log.error("Ошибка при генерации одиночного батча: {}", e.getMessage());
+            throw e;
+        } finally {
+            sample.stop(batchDurationTimer);
+        }
+    }
+
     public synchronized void start(LoadRequest request) {
         if (running) {
             throw new IllegalStateException("Генератор уже запущен. Сначала вызовите /stop.");
