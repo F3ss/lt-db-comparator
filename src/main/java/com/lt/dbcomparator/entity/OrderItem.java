@@ -5,10 +5,15 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
+import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
+import org.springframework.data.mongodb.core.mapping.Document;
+import java.util.UUID;
+
 /**
- * Позиция заказа — вложенный объект в Order.
- * Содержит SNAPSHOT данных товара на момент покупки (Denormalization).
+ * Позиция заказа — отдельная коллекция в MongoDB.
  */
+@Document(collection = "order_items")
 @Getter
 @Setter
 @NoArgsConstructor
@@ -16,13 +21,16 @@ import java.time.LocalDateTime;
 @Builder
 public class OrderItem {
 
-    // Ссылка на товар (для аналитики/генерации)
-    private String productId;
+    @Id
+    @Builder.Default
+    private String id = UUID.randomUUID().toString();
 
-    // ── Snapshot данных товара (чтобы не делать lookup) ──
-    private String productName;
-    private String productSku;
-    private String productCategory;
+    @Indexed
+    private String orderId;
+
+    // Ссылка на товар (для аналитики/генерации)
+    @Indexed
+    private String productId;
 
     private Integer quantity;
 

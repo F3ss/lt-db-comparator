@@ -247,27 +247,49 @@ public class DataGeneratorService {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
         LocalDateTime now = LocalDateTime.now();
         List<Customer> customers = new ArrayList<>(batchSize);
+        List<CustomerProfile> profiles = new ArrayList<>(batchSize);
+        List<Order> orders = new ArrayList<>();
+        List<OrderItem> items = new ArrayList<>();
 
         for (int i = 0; i < batchSize; i++) {
-            customers.add(createRandomCustomer(rng, now));
+            createRandomCustomerGraph(rng, now, customers, profiles, orders, items);
         }
 
         // Mongo Bulk Insert для максимальной производительности
         mongoTemplate.bulkOps(BulkOperations.BulkMode.UNORDERED, Customer.class)
                 .insert(customers)
                 .execute();
+        mongoTemplate.bulkOps(BulkOperations.BulkMode.UNORDERED, CustomerProfile.class)
+                .insert(profiles)
+                .execute();
+
+        if (!orders.isEmpty()) {
+            mongoTemplate.bulkOps(BulkOperations.BulkMode.UNORDERED, Order.class)
+                    .insert(orders)
+                    .execute();
+        }
+        if (!items.isEmpty()) {
+            mongoTemplate.bulkOps(BulkOperations.BulkMode.UNORDERED, OrderItem.class)
+                    .insert(items)
+                    .execute();
+        }
 
         totalRecords.addAndGet(batchSize);
         recordsTotalCounter.increment(batchSize);
     }
 
-    private Customer createRandomCustomer(ThreadLocalRandom r, LocalDateTime now) {
+    private void createRandomCustomerGraph(ThreadLocalRandom r, LocalDateTime now,
+            List<Customer> customers, List<CustomerProfile> profiles,
+            List<Order> orders, List<OrderItem> items) {
         String fn = pick(FIRST_NAMES, r);
         String ln = pick(LAST_NAMES, r);
         String email = fn.toLowerCase() + "." + ln.toLowerCase() + UUID.randomUUID().toString().substring(0, 8)
                 + "@test.com";
 
+        String customerId = UUID.randomUUID().toString();
+
         Customer customer = Customer.builder()
+                .id(customerId)
                 .firstName(fn)
                 .lastName(ln)
                 .email(email)
@@ -278,9 +300,12 @@ public class DataGeneratorService {
                 .loyaltyPoints(r.nextInt(10000))
                 .country(pick(COUNTRIES, r))
                 .build();
+        customers.add(customer);
 
-        // 1. Profile (Embedded)
-        customer.setProfile(CustomerProfile.builder()
+        // 1. Profile (Separate Collection)
+        CustomerProfile profile = CustomerProfile.builder()
+                .id(UUID.randomUUID().toString())
+                .customerId(customerId)
                 .avatarUrl("https://avatar.example.com/" + r.nextInt(1000) + ".png")
                 .bio("Bio info...")
                 .preferredLanguage(pick(LANGUAGES, r))
@@ -288,60 +313,48 @@ public class DataGeneratorService {
                 .address("Street " + r.nextInt(200) + ", apt " + r.nextInt(100))
                 .city(pick(CITIES, r))
                 .zipCode(String.valueOf(100000 + r.nextInt(899999)))
-                .build());
+                .build();
+        profiles.add(profile);
 
-        // 2. Orders (Embedded List)
+        // 2. Orders (Separate Collection)
         int orderCount = 1 + r.nextInt(5);
-        List<Order> orders = new ArrayList<>(orderCount);
         for (int j = 0; j < orderCount; j++) {
-            orders.add(createRandomOrder(r, now));
+            String orderId = UUID.randomUUID().toString();
+            Order order = Order.builder()
+                    .id(orderId)
+                    .customerId(customerId)
+                    .orderNumber("ORD-" + UUID.randomUUID())
+                    .orderDate(now.minusDays(r.nextInt(365)))
+                    .status(pick(ORDER_STATUSES, r))
+                    .totalAmount(BigDecimal.valueOf(r.nextDouble(10, 10000)).setScale(2, RoundingMode.HALF_UP))
+                    .currency(pick(CURRENCIES, r))
+                    .shippingAddress(pick(CITIES, r) + ", Street " + r.nextInt(200))
+                    .notes(r.nextBoolean() ? "Express" : null)
+                    .expectedDelivery(LocalDate.now().plusDays(r.nextInt(30)))
+                    .build();
+            orders.add(order);
+
+            // 3. Order Items (Separate Collection)
+            int itemCount = 2 + r.nextInt(6);
+            for (int k = 0; k < itemCount; k++) {
+                // Берем случайный продукт из кэша
+                Product product = cachedProducts.get(r.nextInt(cachedProducts.size()));
+                int qty = 1 + r.nextInt(10);
+                BigDecimal total = product.getPrice().multiply(BigDecimal.valueOf(qty));
+
+                OrderItem item = OrderItem.builder()
+                        .id(UUID.randomUUID().toString())
+                        .orderId(orderId)
+                        .productId(product.getId())
+                        .quantity(qty)
+                        .unitPrice(product.getPrice())
+                        .totalPrice(total)
+                        .discount(BigDecimal.ZERO)
+                        .createdAt(now)
+                        .build();
+                items.add(item);
+            }
         }
-        customer.setOrders(orders);
-
-        return customer;
-    }
-
-    private Order createRandomOrder(ThreadLocalRandom r, LocalDateTime now) {
-        Order order = Order.builder()
-                .orderNumber("ORD-" + UUID.randomUUID())
-                .orderDate(now.minusDays(r.nextInt(365)))
-                .status(pick(ORDER_STATUSES, r))
-                .totalAmount(BigDecimal.valueOf(r.nextDouble(10, 10000)).setScale(2, RoundingMode.HALF_UP))
-                .currency(pick(CURRENCIES, r))
-                .shippingAddress(pick(CITIES, r) + ", Street " + r.nextInt(200))
-                .notes(r.nextBoolean() ? "Express" : null)
-                .expectedDelivery(LocalDate.now().plusDays(r.nextInt(30)))
-                .build();
-
-        // 3. Order Items (Embedded)
-        int itemCount = 2 + r.nextInt(6);
-        List<OrderItem> items = new ArrayList<>(itemCount);
-        for (int k = 0; k < itemCount; k++) {
-            items.add(createRandomOrderItem(r, now));
-        }
-        order.setItems(items);
-
-        return order;
-    }
-
-    private OrderItem createRandomOrderItem(ThreadLocalRandom r, LocalDateTime now) {
-        // Берем случайный продукт из кэша
-        Product product = cachedProducts.get(r.nextInt(cachedProducts.size()));
-        int qty = 1 + r.nextInt(10);
-        BigDecimal total = product.getPrice().multiply(BigDecimal.valueOf(qty));
-
-        return OrderItem.builder()
-                .productId(product.getId())
-                // SNAPSHOTTING: Копируем данные товара в момент покупки
-                .productName(product.getName())
-                .productSku(product.getSku())
-                .productCategory(product.getCategory())
-                .quantity(qty)
-                .unitPrice(product.getPrice())
-                .totalPrice(total)
-                .discount(BigDecimal.ZERO)
-                .createdAt(now)
-                .build();
     }
 
     private void ensureProductsExist() {

@@ -2,16 +2,19 @@ package com.lt.dbcomparator.entity;
 
 import lombok.*;
 
+import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
+import org.springframework.data.mongodb.core.mapping.Document;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 
 /**
- * Заказ — вложенный объект в Customer.
+ * Заказ — отдельная коллекция в MongoDB.
  */
+@Document(collection = "orders")
 @Getter
 @Setter
 @NoArgsConstructor
@@ -19,8 +22,12 @@ import java.util.UUID;
 @Builder
 public class Order {
 
+    @Id
     @Builder.Default
     private String id = UUID.randomUUID().toString();
+
+    @Indexed
+    private String customerId;
 
     private String orderNumber;
 
@@ -38,8 +45,4 @@ public class Order {
 
     private LocalDate expectedDelivery;
 
-    // ── Вложенные объекты (Embedded) ──
-
-    @Builder.Default
-    private List<OrderItem> items = new ArrayList<>();
 }

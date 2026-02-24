@@ -27,7 +27,9 @@ public record CustomerResponse(
         ProfileResponse profile,
         List<OrderResponse> orders) {
 
-    public static CustomerResponse from(Customer entity) {
+    public static CustomerResponse from(Customer entity, CustomerProfile profile, List<Order> orders,
+            java.util.Map<String, List<OrderItem>> itemsByOrderId,
+            java.util.Map<String, Product> productMap) {
         return new CustomerResponse(
                 entity.getId(),
                 entity.getFirstName(),
@@ -39,9 +41,12 @@ public record CustomerResponse(
                 entity.getStatus(),
                 entity.getLoyaltyPoints(),
                 entity.getCountry(),
-                entity.getProfile() != null ? ProfileResponse.from(entity.getProfile()) : null,
-                entity.getOrders() != null
-                        ? entity.getOrders().stream().map(OrderResponse::from).toList()
+                profile != null ? ProfileResponse.from(profile) : null,
+                orders != null
+                        ? orders.stream()
+                                .map(o -> OrderResponse.from(o, itemsByOrderId.getOrDefault(o.getId(), List.of()),
+                                        productMap))
+                                .toList()
                         : List.of());
     }
 
@@ -76,13 +81,13 @@ public record CustomerResponse(
             String notes,
             LocalDate expectedDelivery,
             List<ItemResponse> items) {
-        public static OrderResponse from(Order o) {
+        public static OrderResponse from(Order o, List<OrderItem> items, java.util.Map<String, Product> productMap) {
             return new OrderResponse(
                     o.getId(), o.getOrderNumber(), o.getOrderDate(),
                     o.getStatus(), o.getTotalAmount(), o.getCurrency(),
                     o.getShippingAddress(), o.getNotes(), o.getExpectedDelivery(),
-                    o.getItems() != null
-                            ? o.getItems().stream().map(ItemResponse::from).toList()
+                    items != null
+                            ? items.stream().map(i -> ItemResponse.from(i, productMap.get(i.getProductId()))).toList()
                             : List.of());
         }
     }
@@ -95,22 +100,12 @@ public record CustomerResponse(
             BigDecimal discount,
             LocalDateTime createdAt,
             ProductResponse product) {
-        public static ItemResponse from(OrderItem item) {
+        public static ItemResponse from(OrderItem item, Product product) {
             return new ItemResponse(
                     item.getQuantity(),
                     item.getUnitPrice(), item.getTotalPrice(), item.getDiscount(),
                     item.getCreatedAt(),
-                    // Reconstruct ProductResponse from snapshot data
-                    new ProductResponse(
-                            item.getProductId(),
-                            item.getProductName(),
-                            item.getProductSku(),
-                            null, // description not in snapshot
-                            item.getUnitPrice(), // price at moment of purchase
-                            item.getProductCategory(),
-                            null, // weight
-                            null // inStock
-                    ));
+                    product != null ? ProductResponse.from(product) : null);
         }
     }
 

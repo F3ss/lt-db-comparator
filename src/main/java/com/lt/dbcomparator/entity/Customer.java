@@ -7,19 +7,12 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
+import java.time.LocalDateTime;
 
 /**
  * Ключевая сущность — клиент.
- * В MongoDB хранится как единый документ:
- * {
- * _id: ...,
- * profile: { ... },
- * orders: [
- * { items: [ ... ] }
- * ]
- * }
+ * В MongoDB теперь хранится в собственной коллекции customers (без вложенных
+ * профилей и заказов).
  */
 @Document(collection = "customers")
 @Getter
@@ -51,10 +44,4 @@ public class Customer {
 
     private String country;
 
-    // ── Вложенные объекты (Embedded) ──
-
-    private CustomerProfile profile;
-
-    @Builder.Default
-    private List<Order> orders = new ArrayList<>();
 }
