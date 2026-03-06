@@ -1,14 +1,10 @@
 {
   "metaTopicName": "EQ_PARSED_META",
   "topicName": "EQ_JOURNAL",
-  "batchesPerThread": 64139,
-  "threadCount": 2,
   "kafkaSettings": {
     "bootstrap.servers": "localhost:33193",
-    "group.id": "test4",
     "enable.auto.commit": "false",
     "max.request.size": "1000000",
-    "auto.commit.interval.ms": "1000",
     "session.timeout.ms": "30000",
     "key.deserializer": "org.apache.kafka.common.serialization.StringDeserializer",
     "value.deserializer": "org.apache.kafka.common.serialization.StringDeserializer",

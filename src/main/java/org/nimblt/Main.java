@@ -1,56 +1,36 @@
 package org.nimblt;
 
-import org.apache.kafka.clients.producer.ProducerRecord;
 import org.nimblt.config.KafkaConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Map;
 
 /**
  * Демонстрационный пример использования библиотеки eq-kafka-sender.
  * <p>
  * Показывает, как инициализировать {@link EqKafkaService} из config.json,
- * выполнить чтение из одного топика и отправку в другой.
+ * получить мета-данные и обновить их.
  */
 public class Main {
 
     private static final Logger log = LoggerFactory.getLogger(Main.class);
 
     public static void main(String[] args) throws IOException {
-        // Загружаем конфигурацию из classpath-ресурса
         KafkaConfig config = KafkaConfig.fromResource("config.json");
 
-        // Создаём сервис и регистрируем shutdown hook для корректной остановки по
-        // Ctrl+C
-        EqKafkaService service = new EqKafkaService(config);
+        try (EqKafkaService service = new EqKafkaService(config)) {
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            log.info("Получен сигнал завершения, останавливаем сервис...");
-            service.close();
-        }));
+            // Мета уже загружена при создании сервиса
+            Map<String, String> meta = service.getMeta();
+            log.info("Загружено {} мета-записей:", meta.size());
+            meta.forEach((key, value) -> log.info("  key='{}', value='{}'", key, value));
 
-        // --- Пример: чтение из metaTopicName и пересылка в topicName ---
-        service.consume(records -> {
-            List<ProducerRecord<String, byte[]>> batch = new ArrayList<>();
-
-            records.forEach(record -> {
-                log.info("Получено: key='{}', value='{}'", record.key(), record.value());
-
-                // Пример трансформации: пересылаем value как byte[] в целевой топик
-                byte[] payload = record.value().getBytes(StandardCharsets.UTF_8);
-                batch.add(new ProducerRecord<>(
-                        config.getTopicName(), record.key(), payload));
-            });
-
-            if (!batch.isEmpty()) {
-                service.produce(batch);
-                log.info("Переслано {} записей в '{}'", batch.size(), config.getTopicName());
-            }
-        });
+            // Пример: перечитать мету по необходимости
+            service.refreshMeta();
+            log.info("Мета обновлена, записей: {}", service.getMeta().size());
+        }
 
         log.info("Работа завершена");
     }
