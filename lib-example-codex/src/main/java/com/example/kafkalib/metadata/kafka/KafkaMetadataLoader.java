@@ -1,5 +1,7 @@
-package com.example.kafkalib;
+package com.example.kafkalib.metadata.kafka;
 
+import com.example.kafkalib.config.KafkaLibraryConfig;
+import com.example.kafkalib.metadata.MetadataLoader;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -13,11 +15,11 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 
-final class KafkaMetadataLoader implements MetadataLoader {
+public final class KafkaMetadataLoader implements MetadataLoader {
 
     private final KafkaLibraryConfig config;
 
-    KafkaMetadataLoader(KafkaLibraryConfig config) {
+    public KafkaMetadataLoader(KafkaLibraryConfig config) {
         this.config = config;
     }
 

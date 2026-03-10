@@ -1,4 +1,4 @@
-package com.example.kafkalib;
+package com.example.kafkalib.config;
 
 import java.util.Objects;
 import java.util.Properties;

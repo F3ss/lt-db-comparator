@@ -1,8 +1,8 @@
-package com.example.kafkalib;
+package com.example.kafkalib.metadata;
 
 import java.util.Map;
 
-interface MetadataStore {
+public interface MetadataStore {
 
     void replaceAll(Map<String, String> metadata);
 

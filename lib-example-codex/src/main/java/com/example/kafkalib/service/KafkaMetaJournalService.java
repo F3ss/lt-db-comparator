@@ -1,4 +1,15 @@
-package com.example.kafkalib;
+package com.example.kafkalib.service;
+
+import com.example.kafkalib.config.KafkaLibraryConfig;
+import com.example.kafkalib.kafka.sender.BatchMessageSender;
+import com.example.kafkalib.kafka.sender.KafkaBatchMessageSender;
+import com.example.kafkalib.metadata.InMemoryMetadataStore;
+import com.example.kafkalib.metadata.MetadataLoader;
+import com.example.kafkalib.metadata.MetadataStore;
+import com.example.kafkalib.metadata.kafka.KafkaMetadataLoader;
+import com.example.kafkalib.processing.DefaultMessageProcessor;
+import com.example.kafkalib.processing.MessageProcessor;
+import com.example.kafkalib.processing.ProcessedMessage;
 
 import java.util.ArrayList;
 import java.util.List;

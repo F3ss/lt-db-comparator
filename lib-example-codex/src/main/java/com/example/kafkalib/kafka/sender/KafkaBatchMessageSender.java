@@ -1,5 +1,7 @@
-package com.example.kafkalib;
+package com.example.kafkalib.kafka.sender;
 
+import com.example.kafkalib.config.KafkaLibraryConfig;
+import com.example.kafkalib.processing.ProcessedMessage;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -13,11 +15,11 @@ import java.util.Properties;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
-final class KafkaBatchMessageSender implements BatchMessageSender {
+public final class KafkaBatchMessageSender implements BatchMessageSender {
 
     private final KafkaProducer<String, byte[]> producer;
 
-    KafkaBatchMessageSender(KafkaLibraryConfig config) {
+    public KafkaBatchMessageSender(KafkaLibraryConfig config) {
         this.producer = new KafkaProducer<>(producerProperties(config));
     }
 

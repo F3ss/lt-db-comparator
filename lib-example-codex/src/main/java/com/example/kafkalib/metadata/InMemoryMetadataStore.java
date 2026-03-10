@@ -1,11 +1,11 @@
-package com.example.kafkalib;
+package com.example.kafkalib.metadata;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
-final class InMemoryMetadataStore implements MetadataStore {
+public final class InMemoryMetadataStore implements MetadataStore {
 
     private final AtomicReference<Map<String, String>> state =
             new AtomicReference<>(Collections.emptyMap());

@@ -1,4 +1,4 @@
-package com.example.kafkalib;
+package com.example.kafkalib.processing;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -6,7 +6,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
-final class DefaultMessageProcessor implements MessageProcessor {
+public final class DefaultMessageProcessor implements MessageProcessor {
 
     @Override
     public ProcessedMessage process(String key, String value, Map<String, String> metadata) {

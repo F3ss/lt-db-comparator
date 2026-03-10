@@ -1,4 +1,4 @@
-package com.example.kafkalib;
+package com.example.kafkalib.config;
 
 import org.junit.jupiter.api.Test;
 
