@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meta-kafka-cp"
+version = "0.1.0"
+description = "Minimal Python app to copy all records from one Kafka topic to another."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "confluent-kafka>=2.13.2,<3",
+]
+
+[project.scripts]
+meta-kafka-cp = "metakafkacppy.cli:main"
+
+[tool.setuptools]
+packages = ["metakafkacppy"]
